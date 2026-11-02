@@ -84,6 +84,23 @@ typedef struct CIFFI_CALLBACK ciphon_client {
 ciphon_error ciphon_send(const ciphon_client *client, const ciphon_request *request, ciphon_response *response,
                          char **message);
 
+// receives a response body as it arrives, see ciphon_stream.
+typedef struct ciphon_sink {
+  void *userdata;
+  // takes the next chunk of the body, `response` already holds the status and the headers. returning false stops
+  // the transfer, which then fails with CIPHON_ERROR_CANCELLED.
+  bool (*write)(void *userdata, const ciphon_response *response, const uint8_t *data, size_t len);
+} ciphon_sink;
+
+// sends `request` like ciphon_send, but hands the body to `sink` as it arrives and leaves `response->body` empty.
+// a client unable to stream buffers the body, which then reaches the sink in one chunk.
+ciphon_error ciphon_stream(const ciphon_client *client, const ciphon_request *request, ciphon_sink sink,
+                           ciphon_response *response, char **message);
+
+// for clients: the sink of a request sent with ciphon_stream, or null when its body is buffered as usual. a client
+// writing to it calls this from its `send`, on the calling thread, and leaves `response->body` empty.
+const ciphon_sink *ciphon_request_sink(const ciphon_request *request);
+
 // the value of the first header called `name`, compared case insensitively, or null.
 const char *ciphon_response_header(const ciphon_response *response, const char *name);
 

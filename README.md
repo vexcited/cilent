@@ -41,12 +41,27 @@ free(message);
 
 Release the client with `ciphon_client_release` once the library no longer needs it.
 
-Set `max_response_len` to refuse large bodies: the send fails with `CIPHON_ERROR_TOO_LARGE` as soon as an uncompressed `Content-Length` or the bytes received go over it, so the transfer stops early instead of buffering the whole body. The curl, URLSession and OkHttp clients all stop early, and `ciphon_send` checks the body again for clients of your own that ignore the cap.
-
 ```cmake
 add_subdirectory(path/to/ciphon ciphon)
 target_link_libraries(app PUBLIC ciphon::ciphon)
 ```
+
+Set `max_response_len` to refuse large bodies: the send fails with `CIPHON_ERROR_TOO_LARGE` as soon as an uncompressed `Content-Length` or the bytes received go over it, so the transfer stops early instead of buffering the whole body. The curl, URLSession and OkHttp clients all stop early, and `ciphon_send` checks the body again for clients of your own that ignore the cap.
+
+### Streaming
+
+From C, `ciphon_stream` hands the body to a sink as it arrives instead of buffering it, to write a download to a file or hash it on the way. The response still gets the status and headers, its body stays empty. Return false from `write` to stop the transfer with `CIPHON_ERROR_CANCELLED`, and `max_response_len` caps the bytes the sink sees.
+
+```c
+static bool to_file(void *userdata, const ciphon_response *response, const uint8_t *data, size_t len) {
+  return response->status == 200 && fwrite(data, 1, len, userdata) == len;
+}
+
+ciphon_error error = ciphon_stream(&client->http, &request, (ciphon_sink){.userdata = file, .write = to_file},
+                                   &response, &message);
+```
+
+`ciphon_curl()` streams, other clients buffer the body and the sink then gets it in one chunk. The bindings do not expose streaming.
 
 ## With ciffi
 
@@ -83,6 +98,8 @@ static ciphon_error my_send(void *userdata, const ciphon_request *request, cipho
 
 app_client *client = app_client_new(url, (ciphon_client){.userdata = ctx, .send = my_send, .release = my_release});
 ```
+
+To stream, `send` asks `ciphon_request_sink(request)` for the sink of the request and writes the body to it instead of the response. It gets null for a plain `ciphon_send`, and for a request it did not receive itself.
 
 Installed, ciphon is a pair of static libraries and its headers. `<ciphon/ciffi.h>` is a copy of the ciffi
 markers, so C users never need ciffi.

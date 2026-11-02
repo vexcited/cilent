@@ -12,9 +12,12 @@ typedef struct client {
 
 typedef struct buffer {
   const ciphon_request *request;
+  const ciphon_sink *sink;
   ciphon_response *response;
   size_t capacity;
+  uint64_t received;
   bool too_large;
+  bool stopped;
 } buffer;
 
 static pthread_once_t global_once = PTHREAD_ONCE_INIT;
@@ -26,9 +29,14 @@ static size_t on_body(char *data, size_t size, size_t count, void *user) {
   ciphon_response *res = b->response;
   size_t n = size * count;
   uint64_t max = b->request->max_response_len;
-  if (max && res->body_len + n > max) {
+  b->received += n;
+  if (max && b->received > max) {
     b->too_large = true;
     return 0;
+  }
+  if (b->sink) {
+    b->stopped = !b->sink->write(b->sink->userdata, res, (const uint8_t *)data, n);
+    return b->stopped ? 0 : n;
   }
   if (res->body_len + n > b->capacity) {
     size_t capacity = b->capacity ? b->capacity * 2 : 4096;
@@ -119,7 +127,7 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
                                 char **message) {
   client *self = userdata;
   *response = (ciphon_response){};
-  buffer b = {.request = request, .response = response};
+  buffer b = {.request = request, .sink = ciphon_request_sink(request), .response = response};
   struct curl_slist *headers = nullptr;
   for (size_t i = 0; i < request->headers_count; i++) {
     char line[1024];
@@ -162,6 +170,10 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
       if (*message)
         snprintf(*message, 64, "the response body exceeds %llu bytes", (unsigned long long)request->max_response_len);
       return CIPHON_ERROR_TOO_LARGE;
+    }
+    if (b.stopped) {
+      *message = strdup("the sink stopped the transfer");
+      return CIPHON_ERROR_CANCELLED;
     }
     *message = strdup(*error ? error : curl_easy_strerror(rc));
     return error_code(rc);
