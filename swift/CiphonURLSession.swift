@@ -35,16 +35,12 @@ public final class CiphonURLSession: CiphonClient {
       urlRequest.timeoutInterval = Double(request.timeoutMs) / 1000
     }
 
-    let outcome = Outcome()
-    let done = DispatchSemaphore(value: 0)
-    let task = session.dataTask(with: urlRequest) { data, response, error in
-      outcome.set(data: data, response: response, error: error)
-      done.signal()
-    }
-    task.delegate = Redirects(follow: request.followRedirects)
+    let transfer = Transfer(follow: request.followRedirects, limit: request.maxResponseLen)
+    let task = session.dataTask(with: urlRequest)
+    task.delegate = transfer
     task.resume()
-    done.wait()
-    return try outcome.response()
+    transfer.done.wait()
+    return try transfer.response()
   }
 
   private static let methods: [CiphonMethod: String] = [
@@ -52,12 +48,20 @@ public final class CiphonURLSession: CiphonClient {
   ]
 }
 
-// stops at a redirect when the library reads `location` itself.
-private final class Redirects: NSObject, URLSessionTaskDelegate {
+// collects one response, stops at a redirect when the library reads `location` itself and cancels a body over the
+// cap as soon as it is announced or received.
+private final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
   let follow: Bool
+  let limit: UInt64
+  let done = DispatchSemaphore(value: 0)
+  private var data = Data()
+  private var urlResponse: URLResponse?
+  private var error: Error?
+  private var tooLarge = false
 
-  init(follow: Bool) {
+  init(follow: Bool, limit: UInt64) {
     self.follow = follow
+    self.limit = limit
   }
 
   func urlSession(
@@ -66,20 +70,43 @@ private final class Redirects: NSObject, URLSessionTaskDelegate {
   ) {
     completionHandler(follow ? request : nil)
   }
-}
 
-private final class Outcome: @unchecked Sendable {
-  private var data: Data?
-  private var urlResponse: URLResponse?
-  private var error: Error?
+  func urlSession(
+    _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+  ) {
+    urlResponse = response
+    // a compressed length says nothing of the decoded size, the body is then checked as it arrives.
+    let encoded = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Encoding") != nil
+    let announced = response.expectedContentLength
+    if limit > 0 && !encoded && announced > 0 && UInt64(announced) > limit
+      && dataTask.originalRequest?.httpMethod != "HEAD"
+    {
+      tooLarge = true
+      completionHandler(.cancel)
+    } else {
+      completionHandler(.allow)
+    }
+  }
 
-  func set(data: Data?, response: URLResponse?, error: Error?) {
-    self.data = data
-    self.urlResponse = response
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+    if limit > 0 && UInt64(data.count + chunk.count) > limit {
+      tooLarge = true
+      dataTask.cancel()
+      return
+    }
+    data.append(chunk)
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
     self.error = error
+    done.signal()
   }
 
   func response() throws(CiphonError) -> CiphonResponse {
+    if tooLarge {
+      throw .tooLarge(message: "the response body exceeds \(limit) bytes")
+    }
     if let error = error as? URLError {
       throw Self.lift(error)
     }
@@ -89,7 +116,7 @@ private final class Outcome: @unchecked Sendable {
     guard let http = urlResponse as? HTTPURLResponse else {
       throw .network(message: "the response is not http")
     }
-    return CiphonResponse(status: UInt16(http.statusCode), headers: Self.headers(of: http), body: [UInt8](data ?? Data()))
+    return CiphonResponse(status: UInt16(http.statusCode), headers: Self.headers(of: http), body: [UInt8](data))
   }
 
   // URLSession joins repeated headers with commas, cookies are split back into one header each.

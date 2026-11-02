@@ -21,6 +21,16 @@ expect(redirect.status == 302 && redirect.location == "/hello", "redirects can b
 expect(try await client.get(path: "/redirect", follow: true).body == "hello", "redirects can be followed")
 expect(try await client.post(path: "/echo", body: "shout").body == "SHOUT", "post bodies")
 
+expect(try await client.getCapped(path: "/bytes/1000", max: 1000).body.count == 1000, "a body at the cap")
+for path in ["/bytes/100000", "/huge", "/stream/100000"] {
+  do {
+    _ = try await client.getCapped(path: path, max: 1000)
+    expect(false, "\(path) is over the cap")
+  } catch {
+    expect(error == .tooLarge(message: error.message) && error.message.contains("1000"), "cap on \(path): \(error)")
+  }
+}
+
 do {
   _ = try await client.get(path: "/missing", follow: true)
   expect(false, "error statuses throw")

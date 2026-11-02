@@ -44,7 +44,7 @@ void net_client_free(net_client *client) {
 }
 
 static net_error request(net_client *client, ciphon_method method, const char *path, const char *body, bool follow,
-                         net_reply *reply) {
+                         uint64_t max, net_reply *reply) {
   char url[512];
   snprintf(url, sizeof url, "%s%s", client->base_url, path);
   ciphon_header headers[] = {{.name = "Accept", .value = "text/plain"}, {.name = "Content-Type", .value = "text/plain"}};
@@ -57,12 +57,14 @@ static net_error request(net_client *client, ciphon_method method, const char *p
     .body_len = body ? strlen(body) : 0,
     .follow_redirects = follow,
     .timeout_ms = 5000,
+    .max_response_len = max,
   };
   ciphon_response res = {};
   char *message = nullptr;
   ciphon_error code = ciphon_send(&client->http, &req, &res, &message);
   if (code != CIPHON_OK) {
-    net_error error = fail(NET_ERROR_TRANSPORT, "%s: %s", url, message ? message : "no details");
+    net_error error = fail(code == CIPHON_ERROR_TOO_LARGE ? NET_ERROR_TOO_LARGE : NET_ERROR_TRANSPORT, "%s: %s", url,
+                           message ? message : "no details");
     free(message);
     return error;
   }
@@ -87,10 +89,14 @@ static net_error request(net_client *client, ciphon_method method, const char *p
 }
 
 net_error net_client_get(net_client *client, const char *path, bool follow, net_reply *reply) {
-  return request(client, CIPHON_METHOD_GET, path, nullptr, follow, reply);
+  return request(client, CIPHON_METHOD_GET, path, nullptr, follow, 0, reply);
+}
+
+net_error net_client_get_capped(net_client *client, const char *path, uint64_t max, net_reply *reply) {
+  return request(client, CIPHON_METHOD_GET, path, nullptr, true, max, reply);
 }
 
 net_error net_client_post(net_client *client, const char *path, const char *body, net_reply *reply) {
-  return request(client, CIPHON_METHOD_POST, path, body, true, reply);
+  return request(client, CIPHON_METHOD_POST, path, body, true, 0, reply);
 }
 

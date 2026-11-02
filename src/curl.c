@@ -11,8 +11,10 @@ typedef struct client {
 } client;
 
 typedef struct buffer {
+  const ciphon_request *request;
   ciphon_response *response;
   size_t capacity;
+  bool too_large;
 } buffer;
 
 static pthread_once_t global_once = PTHREAD_ONCE_INIT;
@@ -23,6 +25,11 @@ static size_t on_body(char *data, size_t size, size_t count, void *user) {
   buffer *b = user;
   ciphon_response *res = b->response;
   size_t n = size * count;
+  uint64_t max = b->request->max_response_len;
+  if (max && res->body_len + n > max) {
+    b->too_large = true;
+    return 0;
+  }
   if (res->body_len + n > b->capacity) {
     size_t capacity = b->capacity ? b->capacity * 2 : 4096;
     while (capacity < res->body_len + n) capacity *= 2;
@@ -36,9 +43,22 @@ static size_t on_body(char *data, size_t size, size_t count, void *user) {
   return n;
 }
 
+// whether the headers of the final response announce a body over the cap. a compressed length says nothing of
+// the decoded size, the body is then checked as it arrives.
+static bool announces_too_large(const buffer *b) {
+  const ciphon_response *res = b->response;
+  uint64_t max = b->request->max_response_len;
+  if (!max || b->request->method == CIPHON_METHOD_HEAD || res->status < 200) return false;
+  if (b->request->follow_redirects && res->status >= 300 && res->status < 400) return false;
+  const char *length = ciphon_response_header(res, "content-length");
+  if (!length || ciphon_response_header(res, "content-encoding")) return false;
+  return strtoull(length, nullptr, 10) > max;
+}
+
 // keeps every header line of the last response, a redirect followed by curl starts the list over.
 static size_t on_header(char *line, size_t size, size_t count, void *user) {
-  ciphon_response *res = ((buffer *)user)->response;
+  buffer *b = user;
+  ciphon_response *res = b->response;
   size_t n = size * count;
   if (n > 5 && strncmp(line, "HTTP/", 5) == 0) {
     for (size_t i = 0; i < res->headers_count; i++) {
@@ -46,7 +66,13 @@ static size_t on_header(char *line, size_t size, size_t count, void *user) {
       free((void *)res->headers[i].value);
     }
     res->headers_count = 0;
+    const char *code = memchr(line, ' ', n);
+    res->status = code ? (uint16_t)strtoul(code + 1, nullptr, 10) : 0;
     return n;
+  }
+  if (n <= 2 && (line[0] == '\r' || line[0] == '\n')) {
+    b->too_large = announces_too_large(b);
+    return b->too_large ? 0 : n;
   }
   const char *colon = memchr(line, ':', n);
   if (!colon) return n;
@@ -93,7 +119,7 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
                                 char **message) {
   client *self = userdata;
   *response = (ciphon_response){};
-  buffer b = {.response = response};
+  buffer b = {.request = request, .response = response};
   struct curl_slist *headers = nullptr;
   for (size_t i = 0; i < request->headers_count; i++) {
     char line[1024];
@@ -131,6 +157,12 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
 
   if (rc != CURLE_OK) {
     ciphon_response_dispose(response);
+    if (b.too_large) {
+      *message = malloc(64);
+      if (*message)
+        snprintf(*message, 64, "the response body exceeds %llu bytes", (unsigned long long)request->max_response_len);
+      return CIPHON_ERROR_TOO_LARGE;
+    }
     *message = strdup(*error ? error : curl_easy_strerror(rc));
     return error_code(rc);
   }

@@ -8,6 +8,8 @@ import javax.net.ssl.SSLException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okio.Buffer
 
 /**
  * sends the requests of ciphon libraries with OkHttp.
@@ -40,7 +42,7 @@ class CiphonOkHttp(private val client: OkHttpClient = OkHttpClient()) : CiphonCl
         return CiphonResponse(
           status = response.code.toUShort(),
           headers = response.headers.map { (name, value) -> CiphonHeader(name, value) },
-          body = response.body?.bytes() ?: ByteArray(0),
+          body = read(response, request.maxResponseLen),
         )
       }
     } catch (e: SSLException) {
@@ -50,5 +52,20 @@ class CiphonOkHttp(private val client: OkHttpClient = OkHttpClient()) : CiphonCl
     } catch (e: IOException) {
       throw CiphonException.Network(e.message ?: "network failure")
     }
+  }
+
+  // reads at most `limit` bytes, refusing an announced or received body over it before reading the rest.
+  private fun read(response: Response, limit: ULong): ByteArray {
+    val body = response.body ?: return ByteArray(0)
+    if (limit == 0uL || response.request.method == "HEAD") return body.bytes()
+    val tooLarge = CiphonException.TooLarge("the response body exceeds $limit bytes")
+    // OkHttp decodes gzip itself and then drops content-length, an announced length is the decoded one.
+    if (body.contentLength() > 0 && body.contentLength().toULong() > limit) throw tooLarge
+    val buffer = Buffer()
+    val source = body.source()
+    while (source.read(buffer, 8192) != -1L) {
+      if (buffer.size.toULong() > limit) throw tooLarge
+    }
+    return buffer.readByteArray()
   }
 }

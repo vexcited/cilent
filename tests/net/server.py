@@ -1,6 +1,7 @@
 # a local http server for the network tests, it prints its port then serves until killed.
 import http.server
 import sys
+import time
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -15,7 +16,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def do_GET(self):
-        if self.path == "/hello":
+        if self.path.startswith("/bytes/"):
+            self.reply(200, "x" * int(self.path[7:]))
+        elif self.path.startswith("/stream/"):
+            # no content-length, the body ends with the connection.
+            self.send_response(200)
+            self.end_headers()
+            try:
+                for _ in range(int(self.path[8:]) // 1000):
+                    self.wfile.write(b"x" * 1000)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        elif self.path == "/huge":
+            # announces far more than it sends then stalls, only a check of the headers refuses it in time.
+            self.send_response(200)
+            self.send_header("Content-Length", str(1 << 40))
+            self.end_headers()
+            self.wfile.write(b"x" * 1000)
+            self.wfile.flush()
+            time.sleep(3)
+        elif self.path == "/hello":
             self.reply(200, "hello", [("Set-Cookie", "session=abc; Path=/"), ("Set-Cookie", "theme=dark; Path=/")])
         elif self.path == "/redirect":
             self.reply(302, "", [("Location", "/hello")])

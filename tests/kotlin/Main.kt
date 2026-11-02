@@ -33,6 +33,16 @@ fun main() {
     expect(blocking { client.get("/redirect", true) }.body == "hello", "redirects can be followed")
     expect(blocking { client.post("/echo", "shout") }.body == "SHOUT", "post bodies")
 
+    expect(blocking { client.getCapped("/bytes/1000", 1000uL) }.body.length == 1000, "a body at the cap")
+    for (path in listOf("/bytes/100000", "/huge", "/stream/100000")) {
+      try {
+        blocking { client.getCapped(path, 1000uL) }
+        expect(false, "$path is over the cap")
+      } catch (e: NetException.TooLarge) {
+        expect(e.message!!.contains("1000"), "cap on $path: $e")
+      }
+    }
+
     try {
       blocking { client.get("/missing", true) }
       expect(false, "error statuses throw")

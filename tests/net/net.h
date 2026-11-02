@@ -9,6 +9,8 @@ typedef enum CIFFI_ERROR net_error : int32_t {
   NET_ERROR_TRANSPORT = 1,
   /// the server answered with an error status.
   NET_ERROR_STATUS = 2,
+  /// the response body is over the given cap.
+  NET_ERROR_TOO_LARGE = 3,
 } net_error;
 
 CIFFI_ERROR_MESSAGE const char *net_last_error(void);
@@ -34,6 +36,9 @@ CIFFI_DESTRUCTOR void net_client_free(net_client *client);
 
 /// fetches `path`, following redirects when `follow` is set.
 CIFFI_EXPORT CIFFI_ASYNC net_error net_client_get(net_client *client, const char *path, bool follow, net_reply *reply);
+/// fetches `path`, refusing a body over `max` bytes.
+CIFFI_EXPORT CIFFI_ASYNC net_error net_client_get_capped(net_client *client, const char *path, uint64_t max,
+                                                         net_reply *reply);
 /// posts `body` to `path`.
 CIFFI_EXPORT CIFFI_ASYNC net_error net_client_post(net_client *client, const char *path, const char *body,
                                                    net_reply *reply);

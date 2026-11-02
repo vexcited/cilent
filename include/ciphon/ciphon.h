@@ -24,6 +24,8 @@ typedef enum CIFFI_ERROR ciphon_error : int32_t {
   CIPHON_ERROR_CANCELLED = 4,
   /// the request was rejected before being sent, for instance on an invalid url.
   CIPHON_ERROR_INVALID_REQUEST = 5,
+  /// the response body is larger than the request allows.
+  CIPHON_ERROR_TOO_LARGE = 6,
 } ciphon_error;
 
 typedef enum CIFFI_ENUM ciphon_method : uint8_t {
@@ -52,6 +54,9 @@ typedef struct CIFFI_RECORD ciphon_request {
   bool follow_redirects;
   /// zero lets the client choose.
   uint32_t timeout_ms;
+  /// the largest response body accepted, zero for no limit. a larger one fails with CIPHON_ERROR_TOO_LARGE, as
+  /// soon as its `content-length` or the bytes received exceed it.
+  uint64_t max_response_len;
 } ciphon_request;
 
 /// a response, every string and array is allocated with malloc and released by ciphon_response_dispose.

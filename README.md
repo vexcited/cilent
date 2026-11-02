@@ -41,6 +41,8 @@ free(message);
 
 Release the client with `ciphon_client_release` once the library no longer needs it.
 
+Set `max_response_len` to refuse large bodies: the send fails with `CIPHON_ERROR_TOO_LARGE` as soon as an uncompressed `Content-Length` or the bytes received go over it, so the transfer stops early instead of buffering the whole body. The curl, URLSession and OkHttp clients all stop early, and `ciphon_send` checks the body again for clients of your own that ignore the cap.
+
 ```cmake
 add_subdirectory(path/to/ciphon ciphon)
 target_link_libraries(app PUBLIC ciphon::ciphon)
