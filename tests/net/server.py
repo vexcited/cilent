@@ -74,6 +74,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+class Server(http.server.ThreadingHTTPServer):
+    # clients stopping a transfer on purpose break their connection mid request.
+    def handle_error(self, request, client_address):
+        if not isinstance(sys.exc_info()[1], (OSError, ValueError)):
+            super().handle_error(request, client_address)
+
+
+server = Server(("127.0.0.1", 0), Handler)
 print(server.server_address[1], flush=True)
 server.serve_forever()
