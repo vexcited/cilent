@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+# ciphon::curl is static, its consumers link libcurl themselves.
+if(@CURL_FOUND@)
+  find_dependency(CURL)
+endif()
+include(${CMAKE_CURRENT_LIST_DIR}/ciphon-targets.cmake)
