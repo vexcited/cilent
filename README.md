@@ -88,7 +88,15 @@ ciphon_error error = ciphon_stream(&client->http, &request, (ciphon_sink){.userd
                                    &response, &message);
 ```
 
-`ciphon_curl()` streams, other clients buffer the body and the sink then gets it in one chunk. The bindings do not expose streaming.
+`ciphon_curl()` streams, other clients buffer the body and the sink then gets it in one chunk.
+
+`ciphon_upload` sends a body a source reads as it goes, so a large file never sits in memory. `ciphon_source_fd` reads a file with `pread`, any other source fills a buffer from an offset, and a length of `CIPHON_LENGTH_UNKNOWN` sends the body chunked.
+
+```c
+ciphon_error error = ciphon_upload(&client->http, &request, ciphon_source_fd(fd, size), &response, &message);
+```
+
+Only clients streaming request bodies can upload, `ciphon_curl()` does. Another client fails with `CIPHON_ERROR_INVALID_REQUEST`, after sending the request without its body. The bindings do not expose streaming.
 
 ## With ciffi
 
@@ -126,7 +134,7 @@ static ciphon_error my_send(void *userdata, const ciphon_request *request, cipho
 app_client *client = app_client_new(url, (ciphon_client){.userdata = ctx, .send = my_send, .release = my_release});
 ```
 
-To stream, `send` asks `ciphon_request_sink(request)` for the sink of the request and writes the body to it instead of the response. It gets null for a plain `ciphon_send`, and for a request it did not receive itself.
+To stream, `send` asks `ciphon_request_sink(request)` for the sink of the request and writes the body to it instead of the response. It gets null for a plain `ciphon_send`, and for a request it did not receive itself. Likewise `ciphon_request_source(request)` gives the source of an upload, whose reads stay within its length.
 
 Installed, ciphon is a pair of static libraries and its headers. `<ciphon/ciffi.h>` is a copy of the ciffi
 markers, so C users never need ciffi.

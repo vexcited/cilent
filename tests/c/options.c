@@ -1,7 +1,9 @@
 #include <ciphon/curl.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define EXPECT(condition, what)                     \
   do {                                              \
@@ -10,6 +12,8 @@
       return 1;                                     \
     }                                               \
   } while (0)
+
+enum { UPLOAD_LEN = 100000 };
 
 static char base[128];
 static ciphon_client curl;
@@ -32,6 +36,42 @@ static ciphon_error fetch(ciphon_request request) {
 
 static bool body_is(const char *text) {
   return response.body_len == strlen(text) && !memcmp(response.body, text, response.body_len);
+}
+
+// the bytes `i % 251`, which the test server checks, cut short at `end` and stopped at `stop`.
+typedef struct pattern {
+  uint64_t end;
+  uint64_t stop;
+} pattern;
+
+static bool pattern_read(void *userdata, uint64_t offset, uint8_t *data, size_t cap, size_t *got) {
+  pattern *p = userdata;
+  if (p->stop && offset >= p->stop) return false;
+  size_t n = 0;
+  while (n < cap && offset + n < p->end && n < 3000) {
+    data[n] = (uint8_t)((offset + n) % 251);
+    n++;
+  }
+  *got = n;
+  return true;
+}
+
+static ciphon_error upload(const char *path, ciphon_source source, const ciphon_header *headers, size_t count) {
+  ciphon_response_dispose(&response);
+  free(message);
+  message = nullptr;
+  ciphon_request request = {.method = CIPHON_METHOD_PUT,
+                            .url = url(path),
+                            .headers = headers,
+                            .headers_count = count,
+                            .follow_redirects = true,
+                            .timeout_ms = 5000};
+  return ciphon_upload(&curl, &request, source, &response, &message);
+}
+
+static ciphon_error buffered_send(void *, const ciphon_request *, ciphon_response *response, char **) {
+  *response = (ciphon_response){.status = 200};
+  return CIPHON_OK;
 }
 
 static int64_t now_ms(void) {
@@ -91,6 +131,55 @@ int main(void) {
   ciphon_error stalled = fetch((ciphon_request){.url = "http://192.0.2.1/", .connect_timeout_ms = 200});
   EXPECT(stalled == CIPHON_ERROR_TIMEOUT || stalled == CIPHON_ERROR_NETWORK, "an unreachable address");
   EXPECT(now_ms() - started < 3000, "the connect timeout is shorter than the total one");
+
+  char path[] = "/tmp/ciphon-upload-XXXXXX";
+  int fd = mkstemp(path);
+  EXPECT(fd >= 0, "a temporary file");
+  unlink(path);
+  uint8_t chunk[UPLOAD_LEN];
+  for (size_t i = 0; i < UPLOAD_LEN; i++) chunk[i] = (uint8_t)(i % 251);
+  EXPECT(write(fd, chunk, UPLOAD_LEN) == UPLOAD_LEN, "write the file");
+  // more than the source length, which never goes out.
+  EXPECT(write(fd, "tail", 4) == 4, "write past the length");
+  lseek(fd, 7, SEEK_SET);
+  EXPECT(upload("/upload", ciphon_source_fd(fd, UPLOAD_LEN), nullptr, 0) == CIPHON_OK && body_is("sized 100000"),
+         "a file");
+  EXPECT(lseek(fd, 0, SEEK_CUR) == 7, "the file keeps its position");
+  EXPECT(upload("/redirect-upload", ciphon_source_fd(fd, UPLOAD_LEN), nullptr, 0) == CIPHON_OK &&
+             body_is("sized 100000"),
+         "a body sent again after a redirect");
+  close(fd);
+
+  const ciphon_header no_expect[] = {{.name = "Expect", .value = ""}};
+  pattern p = {.end = 54321};
+  ciphon_source source = {.userdata = &p, .len = CIPHON_LENGTH_UNKNOWN, .read = pattern_read};
+  EXPECT(upload("/upload", source, no_expect, 1) == CIPHON_OK && body_is("chunked 54321"), "a body of unknown length");
+
+  p = (pattern){.end = 500};
+  source.len = 1000;
+  EXPECT(upload("/upload", source, nullptr, 0) == CIPHON_ERROR_CANCELLED && strstr(message, "source"),
+         "a body shorter than its length");
+  p = (pattern){.end = 50000, .stop = 9000};
+  source.len = 50000;
+  EXPECT(upload("/upload", source, nullptr, 0) == CIPHON_ERROR_CANCELLED, "a source stops the transfer");
+  p = (pattern){.end = 50000};
+  EXPECT(upload("/upload", source, nullptr, 0) == CIPHON_OK && body_is("sized 50000"), "the client works after");
+
+  EXPECT(fetch((ciphon_request){.method = CIPHON_METHOD_POST,
+                               .url = url("/echo"),
+                               .body = (const uint8_t *)"plain",
+                               .body_len = 5}) == CIPHON_OK &&
+             body_is("PLAIN"),
+         "plain bodies after a source");
+
+  ciphon_client buffered = {.send = buffered_send};
+  ciphon_request request = {.method = CIPHON_METHOD_PUT, .url = "fake"};
+  ciphon_response_dispose(&response);
+  free(message);
+  message = nullptr;
+  EXPECT(ciphon_upload(&buffered, &request, source, &response, &message) == CIPHON_ERROR_INVALID_REQUEST,
+         "a client that does not stream request bodies");
+  EXPECT(strstr(message, "stream") && !response.status, "its message");
 
   ciphon_response_dispose(&response);
   free(message);

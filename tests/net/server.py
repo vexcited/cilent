@@ -60,6 +60,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self.reply(200, self.body().decode().upper())
 
+    # checks an uploaded body made of the bytes `i % 251`, and how it was framed.
+    def do_PUT(self):
+        data = self.body()
+        if self.path == "/redirect-upload":
+            self.reply(307, "", [("Location", "/upload")])
+            return
+        framing = "chunked" if "Transfer-Encoding" in self.headers else "sized"
+        bad = next((i for i, b in enumerate(data) if b != i % 251), None)
+        self.reply(200, f"{framing} {len(data)}" if bad is None else f"bad at {bad}")
+
     def log_message(self, *args):
         pass
 

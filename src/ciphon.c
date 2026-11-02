@@ -1,18 +1,28 @@
 #include <ciphon/ciphon.h>
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
 
-// a request sent with ciphon_stream. clients write to `sink`, which counts the bytes against the cap before
-// handing them to `target`.
+#if __has_include(<unistd.h>)
+#include <unistd.h>
+#endif
+
+// a request sent with ciphon_stream or ciphon_upload. clients write to `sink`, which counts the bytes against the
+// cap before handing them to `target`, and read from `source`, which keeps `origin` within its length.
 typedef struct stream {
   const ciphon_request *request;
   ciphon_sink sink;
   ciphon_sink target;
+  ciphon_source source;
+  ciphon_source origin;
   uint64_t received;
+  bool streams;
+  bool uploads;
   bool taken;
+  bool source_taken;
   bool too_large;
 } stream;
 
@@ -54,6 +64,20 @@ static bool stream_write(void *userdata, const ciphon_response *response, const 
   return s->target.write(s->target.userdata, response, data, len);
 }
 
+static bool source_read(void *userdata, uint64_t offset, uint8_t *data, size_t cap, size_t *got) {
+  stream *s = userdata;
+  uint64_t len = s->origin.len;
+  *got = 0;
+  if (len != CIPHON_LENGTH_UNKNOWN) {
+    if (offset >= len) return offset == len;
+    if (cap > len - offset) cap = (size_t)(len - offset);
+  }
+  if (!s->origin.read(s->origin.userdata, offset, data, cap, got)) return false;
+  if (*got > cap) return false;
+  // a body ending before its announced length would leave the server waiting.
+  return *got || len == CIPHON_LENGTH_UNKNOWN;
+}
+
 static ciphon_error send_with(const ciphon_client *client, const ciphon_request *request, stream *s,
                               ciphon_response *response, char **message) {
   // a plain send keeps the stream of an outer one, a client wrapping another one passes its sink along.
@@ -65,7 +89,9 @@ static ciphon_error send_with(const ciphon_client *client, const ciphon_request 
   unsigned long long max = request->max_response_len;
   if ((s && s->too_large) || (code == CIPHON_OK && max && response->body_len > max))
     return fail(code, CIPHON_ERROR_TOO_LARGE, response, message, "the response body exceeds %llu bytes", max);
-  if (code != CIPHON_OK || !s || s->taken) return code;
+  if (code == CIPHON_OK && s && s->uploads && !s->source_taken)
+    return fail(code, CIPHON_ERROR_INVALID_REQUEST, response, message, "the client does not stream request bodies");
+  if (code != CIPHON_OK || !s || !s->streams || s->taken) return code;
 
   bool more = !response->body_len || stream_write(s, response, response->body, response->body_len);
   free(response->body);
@@ -85,7 +111,7 @@ ciphon_error ciphon_send(const ciphon_client *client, const ciphon_request *requ
 
 ciphon_error ciphon_stream(const ciphon_client *client, const ciphon_request *request, ciphon_sink sink,
                            ciphon_response *response, char **message) {
-  stream s = {.request = request, .target = sink};
+  stream s = {.request = request, .target = sink, .streams = true};
   s.sink = (ciphon_sink){.userdata = &s, .write = stream_write};
   char *ignored = nullptr;
   ciphon_error code = send_with(client, request, &s, response, message ? message : &ignored);
@@ -93,11 +119,43 @@ ciphon_error ciphon_stream(const ciphon_client *client, const ciphon_request *re
   return code;
 }
 
+ciphon_error ciphon_upload(const ciphon_client *client, const ciphon_request *request, ciphon_source source,
+                           ciphon_response *response, char **message) {
+  stream s = {.request = request, .origin = source, .uploads = true};
+  s.source = (ciphon_source){.userdata = &s, .len = source.len, .read = source_read};
+  char *ignored = nullptr;
+  ciphon_error code = send_with(client, request, &s, response, message ? message : &ignored);
+  free(ignored);
+  return code;
+}
+
 const ciphon_sink *ciphon_request_sink(const ciphon_request *request) {
-  if (!current || current->request != request) return nullptr;
+  if (!current || current->request != request || !current->streams) return nullptr;
   current->taken = true;
   return &current->sink;
 }
+
+const ciphon_source *ciphon_request_source(const ciphon_request *request) {
+  if (!current || current->request != request || !current->uploads) return nullptr;
+  current->source_taken = true;
+  return &current->source;
+}
+
+#if __has_include(<unistd.h>)
+static bool fd_read(void *userdata, uint64_t offset, uint8_t *data, size_t cap, size_t *got) {
+  for (;;) {
+    ssize_t n = pread((int)(intptr_t)userdata, data, cap, (off_t)offset);
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0) return false;
+    *got = (size_t)n;
+    return true;
+  }
+}
+
+ciphon_source ciphon_source_fd(int fd, uint64_t len) {
+  return (ciphon_source){.userdata = (void *)(intptr_t)fd, .len = len, .read = fd_read};
+}
+#endif
 
 const char *ciphon_response_header(const ciphon_response *response, const char *name) {
   for (size_t i = 0; i < response->headers_count; i++) {

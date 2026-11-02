@@ -16,11 +16,14 @@ typedef struct client {
 typedef struct buffer {
   const ciphon_request *request;
   const ciphon_sink *sink;
+  const ciphon_source *source;
   ciphon_response *response;
   size_t capacity;
   uint64_t received;
+  uint64_t sent;
   bool too_large;
   bool stopped;
+  bool source_failed;
 } buffer;
 
 static pthread_once_t global_once = PTHREAD_ONCE_INIT;
@@ -52,6 +55,24 @@ static size_t on_body(char *data, size_t size, size_t count, void *user) {
   memcpy(res->body + res->body_len, data, n);
   res->body_len += n;
   return n;
+}
+
+static size_t on_read(char *data, size_t size, size_t count, void *user) {
+  buffer *b = user;
+  size_t got = 0;
+  if (!b->source->read(b->source->userdata, b->sent, (uint8_t *)data, size * count, &got)) {
+    b->source_failed = true;
+    return CURL_READFUNC_ABORT;
+  }
+  b->sent += got;
+  return got;
+}
+
+static int on_seek(void *user, curl_off_t offset, int origin) {
+  buffer *b = user;
+  if (origin != SEEK_SET || offset < 0) return CURL_SEEKFUNC_CANTSEEK;
+  b->sent = (uint64_t)offset;
+  return CURL_SEEKFUNC_OK;
 }
 
 // whether the headers of the final response announce a body over the cap. a compressed length says nothing of
@@ -203,7 +224,10 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
                                 char **message) {
   client *self = userdata;
   *response = (ciphon_response){};
-  buffer b = {.request = request, .sink = ciphon_request_sink(request), .response = response};
+  buffer b = {.request = request,
+              .sink = ciphon_request_sink(request),
+              .source = ciphon_request_source(request),
+              .response = response};
   struct curl_slist *headers = nullptr;
   for (size_t i = 0; i < request->headers_count; i++) {
     char line[1024];
@@ -226,7 +250,15 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
   curl_easy_setopt(curl, CURLOPT_URL, request->url);
   curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method_name(request->method));
   if (request->method == CIPHON_METHOD_HEAD) curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
-  if (request->body_len || request->method == CIPHON_METHOD_POST) {
+  if (b.source) {
+    curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+    curl_easy_setopt(curl, CURLOPT_READFUNCTION, on_read);
+    curl_easy_setopt(curl, CURLOPT_READDATA, &b);
+    curl_easy_setopt(curl, CURLOPT_SEEKFUNCTION, on_seek);
+    curl_easy_setopt(curl, CURLOPT_SEEKDATA, &b);
+    curl_off_t len = b.source->len == CIPHON_LENGTH_UNKNOWN ? -1 : (curl_off_t)b.source->len;
+    curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, len);
+  } else if (request->body_len || request->method == CIPHON_METHOD_POST) {
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request->body ? (const char *)request->body : "");
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)request->body_len);
   }
@@ -272,6 +304,10 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
     }
     if (b.stopped) {
       *message = strdup("the sink stopped the transfer");
+      return CIPHON_ERROR_CANCELLED;
+    }
+    if (b.source_failed) {
+      *message = strdup("the source stopped the transfer");
       return CIPHON_ERROR_CANCELLED;
     }
     *message = strdup(*error ? error : curl_easy_strerror(rc));

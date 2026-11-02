@@ -129,6 +129,34 @@ ciphon_error ciphon_stream(const ciphon_client *client, const ciphon_request *re
 // writing to it calls this from its `send`, on the calling thread, and leaves `response->body` empty.
 const ciphon_sink *ciphon_request_sink(const ciphon_request *request);
 
+// the length of a source whose end is not known in advance, its body is sent chunked.
+#define CIPHON_LENGTH_UNKNOWN UINT64_MAX
+
+// produces a request body as it is sent, see ciphon_upload.
+typedef struct ciphon_source {
+  void *userdata;
+  // the length of the body, sent as its `content-length`, or CIPHON_LENGTH_UNKNOWN.
+  uint64_t len;
+  // fills `data` with up to `cap` bytes of the body from `offset` and sets `*got`, zero at its end. the offset
+  // only goes back when the client sends the body again, after a redirect for instance. returning false stops the
+  // transfer, which then fails with CIPHON_ERROR_CANCELLED.
+  bool (*read)(void *userdata, uint64_t offset, uint8_t *data, size_t cap, size_t *got);
+} ciphon_source;
+
+// sends `request` like ciphon_send, with the body `source` produces instead of `request->body`, so a large one is
+// never held in memory. the client must stream it, ciphon_curl() does. one that does not fails with
+// CIPHON_ERROR_INVALID_REQUEST, after sending the request without its body.
+ciphon_error ciphon_upload(const ciphon_client *client, const ciphon_request *request, ciphon_source source,
+                           ciphon_response *response, char **message);
+
+// a source reading the first `len` bytes of the file `fd` with pread, which leaves its position alone.
+ciphon_source ciphon_source_fd(int fd, uint64_t len);
+
+// for clients: the source of a request sent with ciphon_upload, or null. a client calls this from its `send`, on
+// the calling thread, and sends what the source reads instead of `request->body`. the source never reads past its
+// length and fails when the body ends before it.
+const ciphon_source *ciphon_request_source(const ciphon_request *request);
+
 // the value of the first header called `name`, compared case insensitively, or null.
 const char *ciphon_response_header(const ciphon_response *response, const char *name);
 
