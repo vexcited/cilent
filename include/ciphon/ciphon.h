@@ -42,6 +42,21 @@ typedef struct CIFFI_RECORD ciphon_header {
   const char *value;
 } ciphon_header;
 
+/// the schemes a request may use, flags combined in `ciphon_request.protocols`.
+typedef enum CIFFI_ENUM ciphon_protocol : uint8_t {
+  CIPHON_PROTOCOL_HTTP = 1,
+  CIPHON_PROTOCOL_HTTPS = 2,
+} ciphon_protocol;
+
+/// connects to `address` instead of resolving `host`, so the address a library checked is the one it reaches.
+typedef struct CIFFI_RECORD ciphon_pin {
+  const char *host;
+  /// zero for the port of the request url.
+  uint16_t port;
+  /// an ip address, v4 or v6. pins repeating a host and port give it several addresses.
+  const char *address;
+} ciphon_pin;
+
 /// a request, every pointer is borrowed for the duration of the send.
 typedef struct CIFFI_RECORD ciphon_request {
   ciphon_method method;
@@ -57,6 +72,17 @@ typedef struct CIFFI_RECORD ciphon_request {
   /// the largest response body accepted, zero for no limit. a larger one fails with CIPHON_ERROR_TOO_LARGE, as
   /// soon as its `content-length` or the bytes received exceed it.
   uint64_t max_response_len;
+  /// the time allowed to connect, zero lets the client choose. `timeout_ms` still bounds the whole request.
+  uint32_t connect_timeout_ms;
+  /// connect directly, ignoring the proxies the environment or the system configure.
+  bool no_proxy;
+  /// the schemes the url and every redirect may use, `ciphon_protocol` flags. zero allows http and https, a
+  /// client never uses another scheme. a redirect to a refused scheme fails with CIPHON_ERROR_INVALID_REQUEST.
+  uint8_t protocols;
+  /// addresses to connect to, by host. a client unable to pin addresses fails with CIPHON_ERROR_INVALID_REQUEST
+  /// rather than resolving the hosts itself.
+  const ciphon_pin *pins;
+  size_t pins_count;
 } ciphon_request;
 
 /// a response, every string and array is allocated with malloc and released by ciphon_response_dispose.
@@ -67,6 +93,8 @@ typedef struct CIFFI_RECORD ciphon_response {
   size_t headers_count;
   uint8_t *body;
   size_t body_len;
+  /// the url of this response, after the redirects followed. null when the client does not tell.
+  CIFFI_OPTIONAL char *url;
 } ciphon_response;
 
 CIFFI_DESTRUCTOR void ciphon_response_dispose(ciphon_response *response);

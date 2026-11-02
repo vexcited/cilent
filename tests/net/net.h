@@ -24,6 +24,8 @@ typedef struct CIFFI_RECORD net_reply {
   /// the `location` of a redirect that was not followed.
   CIFFI_OPTIONAL char *location;
   uint32_t cookies;
+  /// the url that answered, after redirects.
+  CIFFI_OPTIONAL char *url;
 } net_reply;
 
 CIFFI_DESTRUCTOR void net_reply_dispose(net_reply *reply);
@@ -39,6 +41,11 @@ CIFFI_EXPORT CIFFI_ASYNC net_error net_client_get(net_client *client, const char
 /// fetches `path`, refusing a body over `max` bytes.
 CIFFI_EXPORT CIFFI_ASYNC net_error net_client_get_capped(net_client *client, const char *path, uint64_t max,
                                                          net_reply *reply);
+/// fetches `path` from `host` instead of the base url's, connecting to `address`.
+CIFFI_EXPORT CIFFI_ASYNC net_error net_client_get_pinned(net_client *client, const char *host, const char *address,
+                                                         const char *path, net_reply *reply);
+/// fetches `path` over https only, following redirects.
+CIFFI_EXPORT CIFFI_ASYNC net_error net_client_get_secure(net_client *client, const char *path, net_reply *reply);
 /// posts `body` to `path`.
 CIFFI_EXPORT CIFFI_ASYNC net_error net_client_post(net_client *client, const char *path, const char *body,
                                                    net_reply *reply);

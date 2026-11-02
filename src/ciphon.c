@@ -26,6 +26,7 @@ void ciphon_response_dispose(ciphon_response *response) {
   }
   free(response->headers);
   free(response->body);
+  free(response->url);
   *response = (ciphon_response){};
 }
 

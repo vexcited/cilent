@@ -48,6 +48,33 @@ target_link_libraries(app PUBLIC ciphon::ciphon)
 
 Set `max_response_len` to refuse large bodies: the send fails with `CIPHON_ERROR_TOO_LARGE` as soon as an uncompressed `Content-Length` or the bytes received go over it, so the transfer stops early instead of buffering the whole body. The curl, URLSession and OkHttp clients all stop early, and `ciphon_send` checks the body again for clients of your own that ignore the cap.
 
+### Safer requests
+
+A library fetching URLs its users give can lock the request down:
+
+```c
+ciphon_pin pins[] = {{.host = "example.com", .address = "93.184.215.14"}};
+ciphon_request request = {
+  .method = CIPHON_METHOD_GET,
+  .url = "https://example.com/feed",
+  .timeout_ms = 8000,
+  .connect_timeout_ms = 2000,
+  .no_proxy = true,
+  .protocols = CIPHON_PROTOCOL_HTTPS,
+  .pins = pins,
+  .pins_count = 1,
+};
+```
+
+- `pins` connect to the addresses given instead of resolving their host, so the addresses a library checked against private ranges are the ones it reaches, without a DNS rebinding window. A pin's port defaults to the URL's, and repeating a host gives it several addresses. A redirect to another host resolves it as usual, so a library checking addresses follows redirects itself.
+- `protocols` limits the schemes of the URL and of every redirect, a refused one fails with `CIPHON_ERROR_INVALID_REQUEST`. Clients only ever use `http` and `https`.
+- `no_proxy` ignores the proxies of the environment, such as `http_proxy` for curl, and of the system.
+- `connect_timeout_ms` bounds the connection, `timeout_ms` still bounds the whole request.
+
+`response.url` is the URL that answered, after the redirects followed.
+
+The curl and OkHttp clients support every option. URLSession has no connect timeout and cannot pin addresses, so `CiphonURLSession` ignores `connectTimeoutMs` and refuses a request with pins.
+
 ### Streaming
 
 From C, `ciphon_stream` hands the body to a sink as it arrives instead of buffering it, to write a download to a file or hash it on the way. The response still gets the status and headers, its body stays empty. Return false from `write` to stop the transfer with `CIPHON_ERROR_CANCELLED`, and `max_response_len` caps the bytes the sink sees.

@@ -28,6 +28,14 @@ int main(void) {
   EXPECT(reply.status == 302 && strcmp(reply.location, "/hello") == 0, "redirects can be read");
   net_reply_dispose(&reply);
 
+  EXPECT(net_client_get(client, "/redirect", true, &reply) == NET_OK, "a followed redirect");
+  EXPECT(reply.url && strstr(reply.url, "/hello"), "the final url");
+  net_reply_dispose(&reply);
+  EXPECT(net_client_get_pinned(client, "pinned.invalid", "127.0.0.1", "/hello", &reply) == NET_OK, "a pinned host");
+  EXPECT(strcmp(reply.body, "hello") == 0 && strstr(reply.url, "pinned.invalid"), "reached through its pin");
+  net_reply_dispose(&reply);
+  EXPECT(net_client_get_secure(client, "/hello", &reply) == NET_ERROR_TRANSPORT, "https only");
+
   EXPECT(net_client_post(client, "/echo", "shout", &reply) == NET_OK && strcmp(reply.body, "SHOUT") == 0, "post");
   net_reply_dispose(&reply);
 

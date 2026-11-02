@@ -39,12 +39,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, "hello", [("Set-Cookie", "session=abc; Path=/"), ("Set-Cookie", "theme=dark; Path=/")])
         elif self.path == "/redirect":
             self.reply(302, "", [("Location", "/hello")])
+        elif self.path == "/redirect-ftp":
+            self.reply(302, "", [("Location", "ftp://127.0.0.1/hello")])
         else:
             self.reply(404, "missing")
 
+    def body(self):
+        if self.headers.get("Transfer-Encoding", "").lower() != "chunked":
+            return self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        data = b""
+        while True:
+            size = int(self.rfile.readline().split(b";")[0], 16)
+            if size == 0:
+                while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                    pass
+                return data
+            data += self.rfile.read(size)
+            self.rfile.readline()
+
     def do_POST(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
-        self.reply(200, body.upper())
+        self.reply(200, self.body().decode().upper())
 
     def log_message(self, *args):
         pass

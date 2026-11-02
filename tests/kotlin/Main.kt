@@ -32,6 +32,16 @@ fun main() {
     expect(redirect.status == 302.toUShort() && redirect.location == "/hello", "redirects can be read")
     expect(blocking { client.get("/redirect", true) }.body == "hello", "redirects can be followed")
     expect(blocking { client.post("/echo", "shout") }.body == "SHOUT", "post bodies")
+    expect(blocking { client.get("/redirect", true) }.url?.endsWith("/hello") == true, "the final url")
+    val pinned = blocking { client.getPinned("pinned.invalid", "127.0.0.1", "/hello") }
+    expect(pinned.body == "hello" && pinned.url?.contains("pinned.invalid") == true, "a pinned host")
+    for (refused in listOf<suspend () -> NetReply>({ client.getSecure("/hello") }, { client.get("/redirect-ftp", true) })) {
+      try {
+        blocking { refused() }
+        expect(false, "refused schemes throw")
+      } catch (e: NetException.Transport) {
+      }
+    }
 
     expect(blocking { client.getCapped("/bytes/1000", 1000uL) }.body.length == 1000, "a body at the cap")
     for (path in listOf("/bytes/100000", "/huge", "/stream/100000")) {

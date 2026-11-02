@@ -4,10 +4,13 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 typedef struct client {
   CURL *curl;
   pthread_mutex_t lock;
+  // the pins of the last request, removed from the dns cache of the handle before the next one.
+  struct curl_slist *unpin;
 } client;
 
 typedef struct buffer {
@@ -123,6 +126,79 @@ static ciphon_error error_code(CURLcode rc) {
   }
 }
 
+static const char *protocol_names(uint8_t protocols) {
+  switch (protocols & (CIPHON_PROTOCOL_HTTP | CIPHON_PROTOCOL_HTTPS)) {
+    case CIPHON_PROTOCOL_HTTP: return "http";
+    case CIPHON_PROTOCOL_HTTPS: return "https";
+    default: return "http,https";
+  }
+}
+
+// the port of `url`, its scheme's when it names none.
+static long url_port(const char *url) {
+  CURLU *u = curl_url();
+  char *port = nullptr;
+  long n = 0;
+  if (u && !curl_url_set(u, CURLUPART_URL, url, 0) && !curl_url_get(u, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT))
+    n = strtol(port, nullptr, 10);
+  curl_free(port);
+  curl_url_cleanup(u);
+  return n;
+}
+
+static long pin_port(const ciphon_pin *pin, long url_port) { return pin->port ? pin->port : url_port; }
+
+// the pins as curl resolve entries, `host:port:address,address`, after the removal of the previous ones, which
+// curl would keep in the dns cache of the handle. false when a pin can't be read.
+static bool resolve_entries(client *self, const ciphon_request *request, struct curl_slist **out) {
+  struct curl_slist *list = nullptr, *unpin = nullptr;
+  for (struct curl_slist *e = self->unpin; e; e = e->next) list = curl_slist_append(list, e->data);
+  long port = request->pins_count ? url_port(request->url) : 0;
+  bool ok = !request->pins_count || port;
+  for (size_t i = 0; i < request->pins_count && ok; i++) {
+    const ciphon_pin *pin = &request->pins[i];
+    ok = pin->host && *pin->host && !strchr(pin->host, ':') && pin->address && *pin->address;
+  }
+  for (size_t i = 0; i < request->pins_count && ok; i++) {
+    const ciphon_pin *pin = &request->pins[i];
+    bool seen = false;
+    for (size_t j = 0; j < i && !seen; j++)
+      seen = pin_port(&request->pins[j], port) == pin_port(pin, port) && !strcasecmp(request->pins[j].host, pin->host);
+    if (seen) continue;
+    char *line = nullptr;
+    size_t len = 0;
+    FILE *f = open_memstream(&line, &len);
+    if (!f) {
+      ok = false;
+      break;
+    }
+    fprintf(f, "%s:%ld:", pin->host, pin_port(pin, port));
+    const char *sep = "";
+    for (size_t j = i; j < request->pins_count; j++) {
+      const ciphon_pin *same = &request->pins[j];
+      if (pin_port(same, port) != pin_port(pin, port) || strcasecmp(same->host, pin->host)) continue;
+      // curl reads v6 addresses in brackets.
+      fprintf(f, strchr(same->address, ':') ? "%s[%s]" : "%s%s", sep, same->address);
+      sep = ",";
+    }
+    fclose(f);
+    list = curl_slist_append(list, line);
+    free(line);
+    char removal[320];
+    snprintf(removal, sizeof removal, "-%s:%ld", pin->host, pin_port(pin, port));
+    unpin = curl_slist_append(unpin, removal);
+  }
+  if (!ok) {
+    curl_slist_free_all(list);
+    curl_slist_free_all(unpin);
+    return false;
+  }
+  curl_slist_free_all(self->unpin);
+  self->unpin = unpin;
+  *out = list;
+  return true;
+}
+
 static ciphon_error client_send(void *userdata, const ciphon_request *request, ciphon_response *response,
                                 char **message) {
   client *self = userdata;
@@ -137,6 +213,13 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
   char error[CURL_ERROR_SIZE] = {};
 
   pthread_mutex_lock(&self->lock);
+  struct curl_slist *resolve = nullptr;
+  if ((request->pins_count || self->unpin) && !resolve_entries(self, request, &resolve)) {
+    pthread_mutex_unlock(&self->lock);
+    curl_slist_free_all(headers);
+    *message = strdup("a pin names no host, no address or no port");
+    return CIPHON_ERROR_INVALID_REQUEST;
+  }
   CURL *curl = self->curl;
   // the handle is reused so connections stay alive between requests, only the options are reset.
   curl_easy_reset(curl);
@@ -149,9 +232,21 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
   }
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, request->follow_redirects ? 1L : 0L);
+  curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, protocol_names(request->protocols));
+  curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, protocol_names(request->protocols));
   curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   if (request->timeout_ms) curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)request->timeout_ms);
+  if (request->connect_timeout_ms)
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)request->connect_timeout_ms);
+  // an empty proxy overrides the proxy variables of the environment.
+  if (request->no_proxy) curl_easy_setopt(curl, CURLOPT_PROXY, "");
+  if (resolve) curl_easy_setopt(curl, CURLOPT_RESOLVE, resolve);
+  if (request->pins_count) {
+    // connections are matched by host name, one opened before the pins could lead elsewhere.
+    curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1L);
+    curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 1L);
+  }
   curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, on_body);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &b);
@@ -160,8 +255,12 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
   CURLcode rc = curl_easy_perform(curl);
   long status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+  char *effective = nullptr;
+  curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &effective);
+  if (rc == CURLE_OK && effective) response->url = strdup(effective);
   pthread_mutex_unlock(&self->lock);
   curl_slist_free_all(headers);
+  curl_slist_free_all(resolve);
 
   if (rc != CURLE_OK) {
     ciphon_response_dispose(response);
@@ -185,6 +284,7 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
 static void client_release(void *userdata) {
   client *self = userdata;
   curl_easy_cleanup(self->curl);
+  curl_slist_free_all(self->unpin);
   pthread_mutex_destroy(&self->lock);
   free(self);
 }

@@ -20,6 +20,24 @@ let redirect = try await client.get(path: "/redirect", follow: false)
 expect(redirect.status == 302 && redirect.location == "/hello", "redirects can be read")
 expect(try await client.get(path: "/redirect", follow: true).body == "hello", "redirects can be followed")
 expect(try await client.post(path: "/echo", body: "shout").body == "SHOUT", "post bodies")
+expect(try await client.get(path: "/redirect", follow: true).url?.hasSuffix("/hello") == true, "the final url")
+func expectRefused(_ what: String, _ call: () async throws(NetError) -> NetReply) async {
+  do {
+    _ = try await call()
+    expect(false, "\(what) throws")
+  } catch {
+    expect(error == .transport(message: error.message), "\(what): \(error)")
+  }
+}
+await expectRefused("pins") { () async throws(NetError) in
+  try await client.getPinned(host: "pinned.invalid", address: "127.0.0.1", path: "/hello")
+}
+await expectRefused("http when only https is allowed") { () async throws(NetError) in
+  try await client.getSecure(path: "/hello")
+}
+await expectRefused("a redirect to ftp") { () async throws(NetError) in
+  try await client.get(path: "/redirect-ftp", follow: true)
+}
 
 expect(try await client.getCapped(path: "/bytes/1000", max: 1000).body.count == 1000, "a body at the cap")
 for path in ["/bytes/100000", "/huge", "/stream/100000"] {

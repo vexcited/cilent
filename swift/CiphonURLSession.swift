@@ -8,19 +8,32 @@ import Foundation
 /// sends the requests of ciphon libraries with URLSession.
 ///
 /// libraries call it from the thread running their blocking call, it waits for URLSession there.
-/// cookies are left to the libraries, which read and send them as headers.
+/// cookies are left to the libraries, which read and send them as headers. URLSession has no connect timeout
+/// and cannot pin addresses: `connectTimeoutMs` is ignored and a request with pins is refused.
 public final class CiphonURLSession: CiphonClient {
   private let session: URLSession
+  // the same configuration without proxies, for requests asking for `noProxy`.
+  private let direct: URLSession
 
   public init(configuration: URLSessionConfiguration = .ephemeral) {
     configuration.httpShouldSetCookies = false
     configuration.httpCookieAcceptPolicy = .never
     session = URLSession(configuration: configuration)
+    let unproxied = configuration.copy() as! URLSessionConfiguration
+    unproxied.connectionProxyDictionary = [:]
+    direct = URLSession(configuration: unproxied)
   }
 
   public func send(request: CiphonRequest) throws(CiphonError) -> CiphonResponse {
     guard let url = URL(string: request.url) else {
       throw .invalidRequest(message: "invalid url \(request.url)")
+    }
+    if !request.pins.isEmpty {
+      throw .invalidRequest(message: "URLSession cannot pin addresses")
+    }
+    let schemes = Self.schemes(request.protocols)
+    guard let scheme = url.scheme?.lowercased(), schemes.contains(scheme) else {
+      throw .invalidRequest(message: "the scheme of \(request.url) is not allowed")
     }
     var urlRequest = URLRequest(url: url)
     urlRequest.httpMethod = Self.methods[request.method]
@@ -35,8 +48,8 @@ public final class CiphonURLSession: CiphonClient {
       urlRequest.timeoutInterval = Double(request.timeoutMs) / 1000
     }
 
-    let transfer = Transfer(follow: request.followRedirects, limit: request.maxResponseLen)
-    let task = session.dataTask(with: urlRequest)
+    let transfer = Transfer(follow: request.followRedirects, limit: request.maxResponseLen, schemes: schemes)
+    let task = (request.noProxy ? direct : session).dataTask(with: urlRequest)
     task.delegate = transfer
     task.resume()
     transfer.done.wait()
@@ -46,29 +59,50 @@ public final class CiphonURLSession: CiphonClient {
   private static let methods: [CiphonMethod: String] = [
     .get: "GET", .head: "HEAD", .post: "POST", .put: "PUT", .patch: "PATCH", .delete: "DELETE",
   ]
+
+  // the schemes `protocols` allows, both when it names none.
+  private static func schemes(_ protocols: UInt8) -> Set<String> {
+    var schemes: Set<String> = []
+    if protocols & CiphonProtocol.http.rawValue != 0 { schemes.insert("http") }
+    if protocols & CiphonProtocol.https.rawValue != 0 { schemes.insert("https") }
+    return schemes.isEmpty ? ["http", "https"] : schemes
+  }
 }
 
-// collects one response, stops at a redirect when the library reads `location` itself and cancels a body over the
-// cap as soon as it is announced or received.
+// collects one response, stops at a redirect when the library reads `location` itself or when it leads to a scheme
+// not allowed, and cancels a body over the cap as soon as it is announced or received.
 private final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
   let follow: Bool
   let limit: UInt64
+  let schemes: Set<String>
   let done = DispatchSemaphore(value: 0)
   private var data = Data()
   private var urlResponse: URLResponse?
   private var error: Error?
   private var tooLarge = false
+  private var refused: String?
 
-  init(follow: Bool, limit: UInt64) {
+  init(follow: Bool, limit: UInt64, schemes: Set<String>) {
     self.follow = follow
     self.limit = limit
+    self.schemes = schemes
   }
 
   func urlSession(
     _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void
   ) {
-    completionHandler(follow ? request : nil)
+    guard follow else {
+      completionHandler(nil)
+      return
+    }
+    if let scheme = request.url?.scheme?.lowercased(), schemes.contains(scheme) {
+      completionHandler(request)
+    } else {
+      refused = request.url?.absoluteString ?? "a redirect"
+      completionHandler(nil)
+      task.cancel()
+    }
   }
 
   func urlSession(
@@ -104,6 +138,9 @@ private final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Senda
   }
 
   func response() throws(CiphonError) -> CiphonResponse {
+    if let refused {
+      throw .invalidRequest(message: "the scheme of \(refused) is not allowed")
+    }
     if tooLarge {
       throw .tooLarge(message: "the response body exceeds \(limit) bytes")
     }
@@ -116,7 +153,9 @@ private final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Senda
     guard let http = urlResponse as? HTTPURLResponse else {
       throw .network(message: "the response is not http")
     }
-    return CiphonResponse(status: UInt16(http.statusCode), headers: Self.headers(of: http), body: [UInt8](data))
+    return CiphonResponse(
+      status: UInt16(http.statusCode), headers: Self.headers(of: http), body: [UInt8](data),
+      url: http.url?.absoluteString)
   }
 
   // URLSession joins repeated headers with commas, cookies are split back into one header each.
