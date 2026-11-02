@@ -22,6 +22,7 @@ if(PYTHON3 AND TARGET ciphon_curl)
   add_test(NAME c-stream COMMAND ${with_server} $<TARGET_FILE:c-stream>)
   add_executable(c-options c/options.c)
   target_link_libraries(c-options PRIVATE ciphon::curl)
+  target_compile_definitions(c-options PRIVATE ${ciphon_defines})
   add_test(NAME c-options COMMAND ${with_server} $<TARGET_FILE:c-options>)
 endif()
 
