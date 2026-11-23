@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <stdarg.h>
+#include <stddefer.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -41,8 +42,9 @@ void ciphon_response_dispose(ciphon_response *response) {
 }
 
 // turns the outcome of a send into `code`, the message of a failed send is replaced.
-[[gnu::format(printf, 5, 6)]] static ciphon_error fail(ciphon_error sent, ciphon_error code, ciphon_response *response,
-                                                     char **message, const char *fmt, ...) {
+[[nodiscard, gnu::cold, gnu::format(printf, 5, 6)]]
+static ciphon_error fail(ciphon_error sent, ciphon_error code, ciphon_response *response, char **message,
+                         const char *fmt, ...) {
   ciphon_response_dispose(response);
   if (sent != CIPHON_OK) free(*message);
   va_list ap;
@@ -78,8 +80,8 @@ static bool source_read(void *userdata, uint64_t offset, uint8_t *data, size_t c
   return *got || len == CIPHON_LENGTH_UNKNOWN;
 }
 
-static ciphon_error send_with(const ciphon_client *client, const ciphon_request *request, stream *s,
-                              ciphon_response *response, char **message) {
+[[nodiscard]] static ciphon_error send_with(const ciphon_client *client, const ciphon_request *request, stream *s,
+                                            ciphon_response *response, char **message) {
   // a plain send keeps the stream of an outer one, a client wrapping another one passes its sink along.
   stream *outer = current;
   if (s) current = s;
@@ -104,9 +106,8 @@ static ciphon_error send_with(const ciphon_client *client, const ciphon_request 
 ciphon_error ciphon_send(const ciphon_client *client, const ciphon_request *request, ciphon_response *response,
                          char **message) {
   char *ignored = nullptr;
-  ciphon_error code = send_with(client, request, nullptr, response, message ? message : &ignored);
-  free(ignored);
-  return code;
+  defer free(ignored);
+  return send_with(client, request, nullptr, response, message ? message : &ignored);
 }
 
 ciphon_error ciphon_stream(const ciphon_client *client, const ciphon_request *request, ciphon_sink sink,
@@ -114,9 +115,8 @@ ciphon_error ciphon_stream(const ciphon_client *client, const ciphon_request *re
   stream s = {.request = request, .target = sink, .streams = true};
   s.sink = (ciphon_sink){.userdata = &s, .write = stream_write};
   char *ignored = nullptr;
-  ciphon_error code = send_with(client, request, &s, response, message ? message : &ignored);
-  free(ignored);
-  return code;
+  defer free(ignored);
+  return send_with(client, request, &s, response, message ? message : &ignored);
 }
 
 ciphon_error ciphon_upload(const ciphon_client *client, const ciphon_request *request, ciphon_source source,
@@ -124,9 +124,8 @@ ciphon_error ciphon_upload(const ciphon_client *client, const ciphon_request *re
   stream s = {.request = request, .origin = source, .uploads = true};
   s.source = (ciphon_source){.userdata = &s, .len = source.len, .read = source_read};
   char *ignored = nullptr;
-  ciphon_error code = send_with(client, request, &s, response, message ? message : &ignored);
-  free(ignored);
-  return code;
+  defer free(ignored);
+  return send_with(client, request, &s, response, message ? message : &ignored);
 }
 
 const ciphon_sink *ciphon_request_sink(const ciphon_request *request) {

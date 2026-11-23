@@ -1,6 +1,8 @@
 #include "net.h"
 
 #include <stdarg.h>
+#include <stdcountof.h>
+#include <stddefer.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -14,7 +16,7 @@ static thread_local char last_error[256];
 
 const char *net_last_error(void) { return last_error; }
 
-[[gnu::format(printf, 2, 3)]] static net_error fail(net_error code, const char *fmt, ...) {
+[[nodiscard, gnu::cold, gnu::format(printf, 2, 3)]] static net_error fail(net_error code, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   vsnprintf(last_error, sizeof last_error, fmt, ap);
@@ -50,8 +52,8 @@ typedef struct options {
   uint8_t protocols;
 } options;
 
-static net_error request(net_client *client, ciphon_method method, const char *path, const char *body, bool follow,
-                         uint64_t max, options opts, net_reply *reply) {
+[[nodiscard]] static net_error request(net_client *client, ciphon_method method, const char *path, const char *body,
+                                       bool follow, uint64_t max, options opts, net_reply *reply) {
   char url[512];
   // the base url is `http://127.0.0.1:<port>`, a pinned host replaces its address.
   const char *at = opts.host ? strrchr(client->base_url, ':') : nullptr;
@@ -63,7 +65,7 @@ static net_error request(net_client *client, ciphon_method method, const char *p
     .method = method,
     .url = url,
     .headers = headers,
-    .headers_count = body ? 2 : 1,
+    .headers_count = body ? countof(headers) : 1,
     .body = (const uint8_t *)body,
     .body_len = body ? strlen(body) : 0,
     .follow_redirects = follow,
@@ -75,18 +77,13 @@ static net_error request(net_client *client, ciphon_method method, const char *p
   };
   ciphon_response res = {};
   char *message = nullptr;
+  defer free(message);
   ciphon_error code = ciphon_send(&client->http, &req, &res, &message);
-  if (code != CIPHON_OK) {
-    net_error error = fail(code == CIPHON_ERROR_TOO_LARGE ? NET_ERROR_TOO_LARGE : NET_ERROR_TRANSPORT, "%s: %s", url,
-                           message ? message : "no details");
-    free(message);
-    return error;
-  }
-  if (res.status >= 400) {
-    uint16_t status = res.status;
-    ciphon_response_dispose(&res);
-    return fail(NET_ERROR_STATUS, "%s answered %u", url, status);
-  }
+  if (code != CIPHON_OK)
+    return fail(code == CIPHON_ERROR_TOO_LARGE ? NET_ERROR_TOO_LARGE : NET_ERROR_TRANSPORT, "%s: %s", url,
+                message ? message : "no details");
+  defer ciphon_response_dispose(&res);
+  if (res.status >= 400) return fail(NET_ERROR_STATUS, "%s answered %u", url, res.status);
 
   net_reply out = {.status = res.status, .body = calloc(res.body_len + 1, 1)};
   if (res.body_len) memcpy(out.body, res.body, res.body_len);
@@ -98,7 +95,6 @@ static net_error request(net_client *client, ciphon_method method, const char *p
   const char *location = ciphon_response_header(&res, "location");
   if (location) out.location = strdup(location);
   if (res.url) out.url = strdup(res.url);
-  ciphon_response_dispose(&res);
   *reply = out;
   return NET_OK;
 }
