@@ -63,7 +63,7 @@ if(CIPHON_BINDINGS)
     if(NOT FETCHCONTENT_SOURCE_DIR_CIFFI AND EXISTS ${local}/CMakeLists.txt)
       set(FETCHCONTENT_SOURCE_DIR_CIFFI ${local})
     endif()
-    FetchContent_Declare(ciffi GIT_REPOSITORY ssh://git@vexcited.com/ciko/ciffi.git GIT_TAG main)
+    FetchContent_Declare(ciffi GIT_REPOSITORY ssh://git@code.vexcited.com/ciko/ciffi.git GIT_TAG main)
     FetchContent_MakeAvailable(ciffi)
   endif()
 
