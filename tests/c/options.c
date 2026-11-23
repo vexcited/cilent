@@ -172,6 +172,15 @@ int main(void) {
              body_is("PLAIN"),
          "plain bodies after a source");
 
+  char token[5001];
+  memset(token, 'k', sizeof token - 1);
+  token[sizeof token - 1] = '\0';
+  const ciphon_header long_header[] = {{.name = "X-Token", .value = token}};
+  EXPECT(fetch((ciphon_request){.url = url("/token-length"), .headers = long_header, .headers_count = 1}) ==
+                 CIPHON_OK &&
+             body_is("5000"),
+         "a header of several kilobytes is sent whole");
+
   ciphon_client buffered = {.send = buffered_send};
   ciphon_request request = {.method = CIPHON_METHOD_PUT, .url = "fake"};
   ciphon_response_dispose(&response);

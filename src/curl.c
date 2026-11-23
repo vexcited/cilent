@@ -230,9 +230,14 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
               .response = response};
   struct curl_slist *headers = nullptr;
   for (size_t i = 0; i < request->headers_count; i++) {
-    char line[1024];
-    snprintf(line, sizeof line, "%s: %s", request->headers[i].name, request->headers[i].value);
+    // a line of its own length, a token in a header may take kilobytes.
+    const ciphon_header *h = &request->headers[i];
+    size_t len = strlen(h->name) + strlen(h->value) + 3;
+    char *line = malloc(len);
+    if (!line) continue;
+    snprintf(line, len, "%s: %s", h->name, h->value);
     headers = curl_slist_append(headers, line);
+    free(line);
   }
   char error[CURL_ERROR_SIZE] = {};
 

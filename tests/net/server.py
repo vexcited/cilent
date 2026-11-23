@@ -37,6 +37,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             time.sleep(3)
         elif self.path == "/hello":
             self.reply(200, "hello", [("Set-Cookie", "session=abc; Path=/"), ("Set-Cookie", "theme=dark; Path=/")])
+        elif self.path == "/token-length":
+            self.reply(200, str(len(self.headers.get("X-Token", ""))))
         elif self.path == "/redirect":
             self.reply(302, "", [("Location", "/hello")])
         elif self.path == "/redirect-ftp":
