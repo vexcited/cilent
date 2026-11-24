@@ -59,11 +59,11 @@ if(CIPHON_BINDINGS)
   # from a checkout next to this one when there is.
   if(NOT COMMAND ciffi_generate)
     include(FetchContent)
-    get_filename_component(local ${CMAKE_CURRENT_SOURCE_DIR}/../ciffi ABSOLUTE)
+    get_filename_component(local ${CMAKE_CURRENT_SOURCE_DIR}/../ciko-ciffi ABSOLUTE)
     if(NOT FETCHCONTENT_SOURCE_DIR_CIFFI AND EXISTS ${local}/CMakeLists.txt)
       set(FETCHCONTENT_SOURCE_DIR_CIFFI ${local})
     endif()
-    FetchContent_Declare(ciffi GIT_REPOSITORY ssh://git@code.vexcited.com/ciko/ciffi.git GIT_TAG main)
+    FetchContent_Declare(ciffi GIT_REPOSITORY https://code.vexcited.com/ciko/ciffi.git GIT_TAG main)
     FetchContent_MakeAvailable(ciffi)
   endif()
 

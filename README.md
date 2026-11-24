@@ -115,8 +115,8 @@ let client = AppClient(baseUrl: "https://api.example.com")   // CiphonURLSession
 val client = AppClient("https://api.example.com")            // CiphonOkHttp
 ```
 
-ciphon fetches ciffi unless the parent project already provides `ciffi_generate`, set
-`FETCHCONTENT_SOURCE_DIR_CIFFI` to use a local checkout. The Kotlin client needs OkHttp: Android apps get it from
+ciphon fetches ciffi unless the parent project already provides `ciffi_generate`, from a checkout at
+`../ciko-ciffi` when there is one, or the one `FETCHCONTENT_SOURCE_DIR_CIFFI` points at. The Kotlin client needs OkHttp: Android apps get it from
 Gradle, JVM builds set `CIPHON_OKHTTP_CLASSPATH` or turn on `CIPHON_FETCH_OKHTTP`. Turn `CIPHON_BINDINGS` off to
 build only the C libraries.
 
@@ -142,7 +142,7 @@ markers, so C users never need ciffi.
 ## Build and test
 
 ```sh
-cmake -S . -B build -G Ninja -DFETCHCONTENT_SOURCE_DIR_CIFFI=../ciffi
+cmake -S . -B build -G Ninja
 ninja -C build
 ctest --test-dir build
 ```
