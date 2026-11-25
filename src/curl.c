@@ -28,7 +28,28 @@ typedef struct buffer {
 
 static pthread_once_t global_once = PTHREAD_ONCE_INIT;
 
-static void global_init(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
+// what every client knows of the hosts it talked to: their addresses and their tls sessions. a handle keeps both
+// to itself otherwise, and the sixth client to ask a host resolves it and shakes hands in full like the first.
+// connections stay each handle's own, curl shares none between threads.
+static CURLSH *shared;
+static pthread_mutex_t shared_locks[CURL_LOCK_DATA_LAST];
+
+static void shared_lock(CURL *, curl_lock_data data, curl_lock_access, void *) {
+  pthread_mutex_lock(&shared_locks[data]);
+}
+
+static void shared_unlock(CURL *, curl_lock_data data, void *) { pthread_mutex_unlock(&shared_locks[data]); }
+
+static void global_init(void) {
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  for (size_t i = 0; i < CURL_LOCK_DATA_LAST; i++) pthread_mutex_init(&shared_locks[i], nullptr);
+  shared = curl_share_init();
+  if (!shared) return;
+  curl_share_setopt(shared, CURLSHOPT_LOCKFUNC, shared_lock);
+  curl_share_setopt(shared, CURLSHOPT_UNLOCKFUNC, shared_unlock);
+  curl_share_setopt(shared, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+  curl_share_setopt(shared, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+}
 
 static size_t on_body(char *data, size_t size, size_t count, void *user) {
   buffer *b = user;
@@ -252,6 +273,8 @@ static ciphon_error client_send(void *userdata, const ciphon_request *request, c
   CURL *curl = self->curl;
   // the handle is reused so connections stay alive between requests, only the options are reset.
   curl_easy_reset(curl);
+  // pinned addresses are this request's alone, they stay out of what the clients share.
+  if (shared && !request->pins_count && !self->unpin) curl_easy_setopt(curl, CURLOPT_SHARE, shared);
   curl_easy_setopt(curl, CURLOPT_URL, request->url);
   curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method_name(request->method));
   if (request->method == CIPHON_METHOD_HEAD) curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
