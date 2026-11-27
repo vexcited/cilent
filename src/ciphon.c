@@ -7,7 +7,11 @@
 #include <string.h>
 #include <strings.h>
 
-#if __has_include(<unistd.h>)
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <io.h>
+#include <windows.h>
+#elif __has_include(<unistd.h>)
 #include <unistd.h>
 #endif
 
@@ -140,7 +144,23 @@ const ciphon_source *ciphon_request_source(const ciphon_request *request) {
   return &current->source;
 }
 
-#if __has_include(<unistd.h>)
+#if defined(_WIN32)
+// windows reads at an offset through the handle under the descriptor, which pread is elsewhere.
+static bool fd_read(void *userdata, uint64_t offset, uint8_t *data, size_t cap, size_t *got) {
+  HANDLE h = (HANDLE)_get_osfhandle((int)(intptr_t)userdata);
+  OVERLAPPED at = {.Offset = (DWORD)offset, .OffsetHigh = (DWORD)(offset >> 32)};
+  DWORD n = 0;
+  if (h == INVALID_HANDLE_VALUE) return false;
+  if (!ReadFile(h, data, cap > 0x7fffffff ? 0x7fffffff : (DWORD)cap, &n, &at) && GetLastError() != ERROR_HANDLE_EOF)
+    return false;
+  *got = n;
+  return true;
+}
+
+ciphon_source ciphon_source_fd(int fd, uint64_t len) {
+  return (ciphon_source){.userdata = (void *)(intptr_t)fd, .len = len, .read = fd_read};
+}
+#elif __has_include(<unistd.h>)
 static bool fd_read(void *userdata, uint64_t offset, uint8_t *data, size_t cap, size_t *got) {
   for (;;) {
     ssize_t n = pread((int)(intptr_t)userdata, data, cap, (off_t)offset);

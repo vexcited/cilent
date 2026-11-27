@@ -3,6 +3,7 @@
 #include <curl/curl.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -207,23 +208,27 @@ static bool resolve_entries(client *self, const ciphon_request *request, struct 
     for (size_t j = 0; j < i && !seen; j++)
       seen = pin_port(&request->pins[j], port) == pin_port(pin, port) && !strcasecmp(request->pins[j].host, pin->host);
     if (seen) continue;
-    char *line = nullptr;
-    size_t len = 0;
-    FILE *f = open_memstream(&line, &len);
-    if (!f) {
+    size_t len = (size_t)snprintf(nullptr, 0, "%s:%ld:", pin->host, pin_port(pin, port));
+    for (size_t j = i; j < request->pins_count; j++) {
+      const ciphon_pin *same = &request->pins[j];
+      if (pin_port(same, port) == pin_port(pin, port) && !strcasecmp(same->host, pin->host))
+        len += strlen(same->address) + 3;
+    }
+    char *line = malloc(len + 1);
+    if (!line) {
       ok = false;
       break;
     }
-    fprintf(f, "%s:%ld:", pin->host, pin_port(pin, port));
+    size_t at = (size_t)snprintf(line, len + 1, "%s:%ld:", pin->host, pin_port(pin, port));
     const char *sep = "";
     for (size_t j = i; j < request->pins_count; j++) {
       const ciphon_pin *same = &request->pins[j];
       if (pin_port(same, port) != pin_port(pin, port) || strcasecmp(same->host, pin->host)) continue;
       // curl reads v6 addresses in brackets.
-      fprintf(f, strchr(same->address, ':') ? "%s[%s]" : "%s%s", sep, same->address);
+      at += (size_t)snprintf(line + at, len + 1 - at, strchr(same->address, ':') ? "%s[%s]" : "%s%s", sep,
+                             same->address);
       sep = ",";
     }
-    fclose(f);
     list = curl_slist_append(list, line);
     free(line);
     char removal[320];
